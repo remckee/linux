@@ -1180,13 +1180,177 @@ static int memblock_free_checks(void)
 	return 0;
 }
 
+/*
+ * A test that tries to add EXPECTED_MEMBLOCK_REGIONS + 1 memory blocks of a
+ * specified size to the collection of available memory regions
+ * (memblock.memory):
+ *
+ *  | +--------+        +--------+        +--------+    :   +--------+  |
+ *  | |   r1   |        |   r2   |        |   r3   |    :   |  r129  |  |
+ *  +-+--------+--------+--------+--------+--------+----:---+--------+--+
+ *
+ * Expect to create EXPECTED_MEMBLOCK_REGIONS + 1 new entries, triggering
+ * memblock_double_array() when adding entry EXPECTED_MEMBLOCK_REGIONS + 1.
+ * The region counter and total memory get updated.
+ */
+static int memblock_add_gt_max_regions_check(phys_addr_t dummy_memory)
+{
+	int num_regions = EXPECTED_MEMBLOCK_REGIONS + 1;
+	phys_addr_t base;
+	phys_addr_t size = SZ_16;
+	phys_addr_t total_size = 0;
+
+	setup_memblock();
+	base = memblock_end_of_DRAM();
+
+	prefix_push(__func__);
+
+	for (int i = 1; i <= num_regions; i++) {
+		memblock_add(base, size);
+		base += size + SZ_16;
+		total_size = dummy_memory + i * size;
+
+		ASSERT_EQ(memblock.memory.cnt, i);
+		ASSERT_EQ(memblock.memory.total_size, total_size);
+	}
+
+	test_pass_pop();
+
+	return 0;
+}
+
+/*
+ * A test that tries to mark EXPECTED_MEMBLOCK_REGIONS + 1 memory blocks of a
+ * specified size as reserved:
+ *
+ *  | +--------+        +--------+        +--------+    :   +--------+  |
+ *  | |   r1   |        |   r2   |        |   r3   |    :   |  r129  |  |
+ *  +-+--------+--------+--------+--------+--------+----:---+--------+--+
+ *
+ * Expect to add EXPECTED_MEMBLOCK_REGIONS + 2 entries to the collection of
+ * reserved memory regions (memblock.reserved), triggering
+ * memblock_double_array() when adding entry EXPECTED_MEMBLOCK_REGIONS + 1. The
+ * additional memblock.reserved entry is created in memblock_double_array().
+ * The region counter and total memory size are updated.
+ */
+static int memblock_reserve_gt_max_regions_check(phys_addr_t dummy_memory)
+{
+	int num_regions = EXPECTED_MEMBLOCK_REGIONS + 1;
+	phys_addr_t base;
+	phys_addr_t size = SZ_16;
+	phys_addr_t total_size = 0;
+
+	setup_memblock();
+	base = memblock_end_of_DRAM() - dummy_memory + SZ_16;
+
+	prefix_push(__func__);
+
+	for (int i = 1; i <= num_regions; i++) {
+		if (i == EXPECTED_MEMBLOCK_REGIONS + 1)
+			total_size += PAGE_ALIGN(sizeof(struct memblock_region)
+						 * 2 * memblock.reserved.max);
+
+		memblock_reserve(base, size);
+		base += size + SZ_16;
+		total_size += size;
+
+		if (i <= EXPECTED_MEMBLOCK_REGIONS)
+			ASSERT_EQ(memblock.reserved.cnt, i);
+		else
+			ASSERT_EQ(memblock.reserved.cnt, i + 1);
+
+		ASSERT_EQ(memblock.reserved.total_size, total_size);
+	}
+
+	test_pass_pop();
+
+	return 0;
+}
+
+/*
+ * A test that tries to remove EXPECTED_MEMBLOCK_REGIONS memory blocks of a
+ * specified size from the collection of available memory regions
+ * (memblock.memory):
+ *
+ *           +--------+        +--------+   :   +--------+
+ *           |   r1   |        |   r2   |   :   |  r128  |
+ *           +--------+        +--------+   :   +--------+
+ *  +--------+........+--------+........+---:---+........+--------+ |
+ *  |  rgn1  |        |  rgn2  |        |   :   |        | rgn129 | |
+ *  +--------+--------+--------+--------+---:---+--------+--------+-+
+ *
+ * Expect to split the memory block into EXPECTED_MEMBLOCK_REGIONS + 1 entries,
+ * triggering memblock_double_array() when removing entry number
+ * EXPECTED_MEMBLOCK_REGIONS. The region counter and total memory get updated.
+ */
+static int memblock_remove_gt_max_regions_check(phys_addr_t dummy_memory)
+{
+	int num_regions = EXPECTED_MEMBLOCK_REGIONS + 1;
+	phys_addr_t base;
+	phys_addr_t size = SZ_16;
+	phys_addr_t total_size = 0;
+
+	setup_memblock();
+	base = memblock_end_of_DRAM() - dummy_memory + SZ_16;
+
+	prefix_push(__func__);
+
+	for (int i = 1; i < num_regions; i++) {
+		memblock_remove(base, size);
+		base += size + SZ_16;
+		total_size = dummy_memory - i * size;
+		ASSERT_EQ(memblock.memory.cnt, i + 1);
+		ASSERT_EQ(memblock.memory.total_size, total_size);
+	}
+
+	test_pass_pop();
+
+	return 0;
+}
+
+int memblock_gt_max_regions_checks(void)
+{
+	phys_addr_t dummy_memory = MEM_SIZE;
+
+	memblock_allow_resize();
+	reset_memblock_attributes();
+	dummy_physical_memory_init();
+
+	prefix_push(FUNC_ADD);
+	test_print("Attempting to %s %d regions...\n", FUNC_ADD,
+		   EXPECTED_MEMBLOCK_REGIONS + 1);
+	memblock_add_gt_max_regions_check(dummy_memory);
+	prefix_pop();
+	reset_memblock_regions();
+
+	prefix_push(FUNC_REMOVE);
+	test_print("Attempting to %s %d regions...\n", FUNC_REMOVE,
+		   EXPECTED_MEMBLOCK_REGIONS);
+	memblock_remove_gt_max_regions_check(dummy_memory);
+	prefix_pop();
+	reset_memblock_regions();
+
+	prefix_push(FUNC_RESERVE);
+	test_print("Attempting to %s %d regions...\n", FUNC_RESERVE,
+		   EXPECTED_MEMBLOCK_REGIONS + 1);
+	memblock_reserve_gt_max_regions_check(dummy_memory);
+	prefix_pop();
+
+	//dummy_physical_memory_cleanup();
+	reset_memblock_regions();
+
+	return 0;
+}
+
 int memblock_basic_checks(void)
 {
+	reset_memblock_attributes();
 	memblock_initialization_check();
 	memblock_add_checks();
 	memblock_reserve_checks();
 	memblock_remove_checks();
 	memblock_free_checks();
+	memblock_gt_max_regions_checks();
 
 	return 0;
 }
