@@ -9,6 +9,13 @@
 #define FUNC_REMOVE					"memblock_remove"
 #define FUNC_FREE					"memblock_free"
 
+/*
+ * used in memblock_gt_max_regions_checks() tests:
+ */
+#define GAP_SIZE				SZ_16
+#define NUM_REGIONS				(EXPECTED_MEMBLOCK_REGIONS + 1)
+#define REGION_SIZE				SZ_16
+
 static int memblock_initialization_check(void)
 {
 	PREFIX_PUSH();
@@ -1180,13 +1187,166 @@ static int memblock_free_checks(void)
 	return 0;
 }
 
+static void gt_max_regions_setup(const char *test_name, int num_regions)
+{
+	prefix_push(test_name);
+	test_print("Attempting to %s %d regions...\n", test_name, num_regions);
+	dummy_physical_memory_init();
+	setup_memblock();
+}
+
+static void gt_max_regions_cleanup(void)
+{
+	test_pass_pop();
+	prefix_pop();
+	memblock_discard();
+	reset_memblock_regions();
+}
+
+/*
+ * A test that tries to add EXPECTED_MEMBLOCK_REGIONS + 1 memory blocks of a
+ * specified size to the collection of available memory regions
+ * (memblock.memory):
+ *
+ *  | +--------+        +--------+        +--------+    :   +--------+  |
+ *  | |   r1   |        |   r2   |        |   r3   |    :   |  r129  |  |
+ *  +-+--------+--------+--------+--------+--------+----:---+--------+--+
+ *
+ * Expect to create EXPECTED_MEMBLOCK_REGIONS + 1 new entries, triggering
+ * memblock_double_array() when adding entry EXPECTED_MEMBLOCK_REGIONS + 1.
+ * The region counter and total memory get updated.
+ */
+static int memblock_add_gt_max_regions_check(void)
+{
+	phys_addr_t base;
+	phys_addr_t total_size;
+
+	gt_max_regions_setup(FUNC_ADD, NUM_REGIONS);
+	PREFIX_PUSH();
+	base = memblock_end_of_DRAM();
+	total_size = MEM_SIZE;
+
+	for (int i = 1; i <= NUM_REGIONS; i++) {
+		memblock_add(base, REGION_SIZE);
+		base += REGION_SIZE + GAP_SIZE;
+		total_size += REGION_SIZE;
+
+		ASSERT_EQ(memblock.memory.cnt, i);
+		ASSERT_EQ(memblock.memory.total_size, total_size);
+	}
+
+	gt_max_regions_cleanup();
+
+	return 0;
+}
+
+/*
+ * A test that tries to mark EXPECTED_MEMBLOCK_REGIONS + 1 memory blocks of a
+ * specified size as reserved:
+ *
+ *  | +--------+        +--------+        +--------+    :   +--------+  |
+ *  | |   r1   |        |   r2   |        |   r3   |    :   |  r129  |  |
+ *  +-+--------+--------+--------+--------+--------+----:---+--------+--+
+ *
+ * Expect to add at least EXPECTED_MEMBLOCK_REGIONS + 1 entries to the
+ * collection of reserved memory regions (memblock.reserved), triggering
+ * memblock_double_array() when adding entry EXPECTED_MEMBLOCK_REGIONS + 1. If
+ * !slab_is_available(), expect to add an additional memblock.reserved entry in
+ * memblock_double_array(), for a total of EXPECTED_MEMBLOCK_REGIONS + 2.
+ * The region counter and total memory size are updated.
+ */
+static int memblock_reserve_gt_max_regions_check(void)
+{
+	phys_addr_t base;
+	phys_addr_t total_size;
+
+	gt_max_regions_setup(FUNC_RESERVE, NUM_REGIONS);
+	PREFIX_PUSH();
+	base = memblock_start_of_DRAM();
+	total_size = 0;
+
+	for (int i = 1; i <= NUM_REGIONS; i++) {
+		if (i == EXPECTED_MEMBLOCK_REGIONS + 1 && !slab_is_available())
+			total_size += PAGE_ALIGN(sizeof(struct memblock_region)
+						 * 2 * memblock.reserved.max);
+
+		memblock_reserve(base, REGION_SIZE);
+		base += REGION_SIZE + GAP_SIZE;
+		total_size += REGION_SIZE;
+
+		if (i <= EXPECTED_MEMBLOCK_REGIONS || slab_is_available())
+			ASSERT_EQ(memblock.reserved.cnt, i);
+		else
+			ASSERT_EQ(memblock.reserved.cnt, i + 1);
+
+		ASSERT_EQ(memblock.reserved.total_size, total_size);
+	}
+
+	gt_max_regions_cleanup();
+
+	return 0;
+}
+
+/*
+ * A test that tries to remove EXPECTED_MEMBLOCK_REGIONS memory blocks of a
+ * specified size from the collection of available memory regions
+ * (memblock.memory):
+ *
+ *           +--------+        +--------+   :   +--------+
+ *           |   r1   |        |   r2   |   :   |  r128  |
+ *           +--------+        +--------+   :   +--------+
+ *  +--------+........+--------+........+---:---+........+--------+ |
+ *  |  rgn1  |        |  rgn2  |        |   :   |        | rgn129 | |
+ *  +--------+--------+--------+--------+---:---+--------+--------+-+
+ *
+ * Expect to split the memory block into EXPECTED_MEMBLOCK_REGIONS + 1 entries,
+ * triggering memblock_double_array() when removing entry number
+ * EXPECTED_MEMBLOCK_REGIONS. The region counter and total memory get updated.
+ */
+static int memblock_remove_gt_max_regions_check(void)
+{
+	phys_addr_t base;
+	phys_addr_t total_size;
+
+	gt_max_regions_setup(FUNC_REMOVE, NUM_REGIONS - 1);
+	PREFIX_PUSH();
+	base = memblock_start_of_DRAM() + GAP_SIZE;
+	total_size = MEM_SIZE;
+
+	for (int i = 1; i < NUM_REGIONS; i++) {
+		memblock_remove(base, REGION_SIZE);
+		base += REGION_SIZE + GAP_SIZE;
+		total_size -= REGION_SIZE;
+
+		ASSERT_EQ(memblock.memory.cnt, i + 1);
+		ASSERT_EQ(memblock.memory.total_size, total_size);
+	}
+
+	gt_max_regions_cleanup();
+
+	return 0;
+}
+
+int memblock_gt_max_regions_checks(void)
+{
+	assert(NUM_REGIONS > EXPECTED_MEMBLOCK_REGIONS);
+	memblock_allow_resize();
+	memblock_add_gt_max_regions_check();
+	memblock_reserve_gt_max_regions_check();
+	memblock_remove_gt_max_regions_check();
+
+	return 0;
+}
+
 int memblock_basic_checks(void)
 {
+	reset_memblock_attributes();
 	memblock_initialization_check();
 	memblock_add_checks();
 	memblock_reserve_checks();
 	memblock_remove_checks();
 	memblock_free_checks();
+	memblock_gt_max_regions_checks();
 
 	return 0;
 }

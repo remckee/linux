@@ -9,6 +9,7 @@
 #include <linux/sizes.h>
 #include <linux/printk.h>
 #include <../selftests/kselftest.h>
+#include <linux/slab.h>
 
 #define MEM_SIZE SZ_16K
 
